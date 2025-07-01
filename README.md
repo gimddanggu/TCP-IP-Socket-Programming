@@ -202,4 +202,269 @@ ls /mnt/hgfs
 ln -s /mnt/hgfs/{공유폴더명} {~/바탕화면/공유폴더}
 ```
 
+## 2일차
 
+### sockaddr_in 구조체 정의 (IPv4 전용)
+```c
+struct sockaddr_in {
+    sa_family_t    sin_family;  // 주소 체계: AF_INET (IPv4)
+    in_port_t      sin_port;    // 포트 번호 (network byte order)
+    struct in_addr sin_addr;    // IPv4 주소를 저장하기 위해 사용되는 구조체
+    char           sin_zero[8]; // 구조체 크기 맞춤용 padding (사용 안함)
+};
+```
+- `sin_family`: 주소 체계를 나타내며 보통 AF_INET으로 설정한다.
+- `sin_port`: 포트 번호. htons() 함수로 호스트 바이트 순서를 네트워크 바이트 순서로 변환해서 저장해야 한다.
+- `sin_addr`: 실제 IP 주소(in_addr 구조체로 감싸져 있음). inet_pton()이나 inet_addr() 등을 통해 설정한다.
+- `sin_zero`: 구조체 크기를 sockaddr과 맞추기 위한 더미 배열. 실제로는 사용되지 않는다
+- 참고: 원래 sockaddr_in 구조체 자체는 IPv6 주소 또한 담을 수 있다. IPv4주소만 담을 수 있는 이유는 `in_addr` 구조체 때문이다.
+
+### in_addr 구조체 정의
+```c
+struct in_addr {
+    in_addr_t s_addr; // IPv4 주소 (32비트 정수, network byte order)
+};
+```
+- s_addr는 IPv4 주소를 저장하는 32비트 필드이며, `in_addr_t`는 보통 `uint32_t`
+- 이 값은 네트워크 바이트 순서로 저장되어야 하므로, 보통 `inet_addr()`, `inet_pton()` 등을 사용해 IP 문자열을 변환해서 넣는다.
+
+### in_addr_t
+in_addr_t는 다음과 같이 정의된 **타입 별칭(alias)**
+```
+typedef uint32_t in_addr_t;
+```
+즉, in_addr_t는 32비트 부호 없는 정수형(`uint32_t`)을 의미하며,
+주로 **IPv4 주소를 표현**하는 데 사용됩니다.
+이는 struct in_addr처럼 구조체로 감싸진 형태와는 다른 개념입니다.
+→ `in_addr_t`는 **데이터 자체**, `in_addr는` **그걸 감싼 껍데기 구조체** 라고 볼 수 있다
+
+#### uint32
+C 표준 헤더 <stdint.h>에 정의된 고정 크기 정수형
+- u = unsigned
+- int = 정수
+- 32 = 32비트
+
+→ 32비트 부호 없는 정수
+→ 값 범위 0 ~ 4,294,967,295 $(2^{32}-1)$
+
+
+**`int`가 아닌 `uint32` 사용이유?**
+int나 long 같은 기본 정수형은 플랫폼마다 크기가 달라질 수 있기 때문.
+- 어떤 환경에서는 int가 32비트지만, 다른 환경에서는 16비트이거나, long이 64비트일 수도 있음
+- 예시)
+    - Windows에서는 long이 32비트
+    - Linux 64비트에서는 long이 64비트
+> 따라서 **네트워크 프로토콜, 바이너리 포맷, 파일 구조, 시스템 통신** 등
+크기가 엄격히 정해져야 하는 영역에서는 `uint32_t` 같은 **고정형 타입**을 사용한다.
+
+#### 플랫폼이란?
+플랫폼 = 하드웨어(CPU 아키텍처) + 운영체제(OS) + 컴파일러
+
+이 조합에 따라 `int`, `long` 등의 크기나 메모리 정렬 방식(endian) 등이 달라질 수 있으므로,
+**크기와 바이트 순서가 중요한 네트워크/시스템 프로그래밍** 에서는 항상 **명시적 타입**을 쓰는 것이 중요합니다.
+
+### 문자열 정보 처리 함수 정리
+#### inet_addr()
+```c
+in_addr_t inet_addr(const char* string)
+```
+- IPv4 주소 문자열을 32비트 정수로 변환해주는 함수
+- 성공 시 빅 엔디안으로 변환된 32비트 정수 값, 실패 시 `INADDR_NONE` 반환
+- 이 함수는 deprecated(사용 권장 안 함) 상태이다.
+    → 이유: `"255.255.255.256"` 같은 잘못된 주소도 그냥 처리해버릴 수 있기 때문.
+- 대체로 `inet_pton(AF_INET, "192.168.0.1", &addr.sin_addr)` 사용이 권장됨.
+
+#### inet_aton
+```c
+int inet_aton(const char* string, struct in_addr* addr);
+```
+- `inet_addr()` 과 유사하게 IPv4 문자열을 이진 형태로 바꾸는 함수
+- 매개변수
+    - `cp` : "192.168.0.1" 같은 IPv4 문자열
+    - `inp` : 변환된 결과를 담을 struct in_addr* 포인터
+- 성공시 `1`, 실패시(잘못된 IP 문자열일 경우) `0` 반환
+- `inet_addr()` 보다 더 안전하고 권장되는 함수
+
+#### inet_pton()
+``` c
+int inet_pton(int af, const char *src, void *dst);
+```
+- 위의 함수와 마찬가지로 IP 주소 문자열을 네트워크 바이트 순서로 변환해주는 함수
+- IPv4 뿐만 아니라 **IPv6까지 지원**
+- 문자열 IP주소 -> 정수 IP 로 바꿀 때 가장 많이 사용
+- 매개변수
+    - `af` : 주소 체계(`AF_INET` 또는 `AF_INET6`)
+    - `src`: 변환할 IP 주소 문자열
+    - `dst`: 변환될 결과를 저장할 포인터 (struct in_addr* 또는 struct in6_addr*)
+- 반환값
+    - `1` : 성공
+    - `0`  : IP 문자열 형식이 잘못됨
+    - `-1`  : `af`가 잘못되었거나 내부 오류
+
+#### inet_addr() vs inet_aton() vs inet_pton() 
+| 함수 이름     | 방향         | 지원 IP 버전    | 반환 타입       | 실패 처리 방식      | 안전성 |
+| ------------- | ----------- |----------- | ----------- | ------------- | :---: |
+| `inet_addr()` | 문자열 → 32비트 정수 | IPv4 only   | `in_addr_t` | `INADDR_NONE` | ❌   |
+| `inet_aton()` | 문자열 → in_addr 구조체| IPv4 only   | `int`       | `0` (실패 시)    | ✅   |
+| `inet_pton()` | 문자열 → 이진 주소 (IPv4/6)| IPv4 & IPv6 | `int`       | `0` 또는 `-1`   | ✅✅ |
+
+#### inet_ntoa()
+```c
+char* inet_ntoa(struct in_addr in);
+```
+- IPv4 주소 (struct in_addr) → 문자열 변환
+- 반환값: 문자열 포인터 (static 버퍼 사용)
+- IPv4만 지원
+- static 버퍼를 사용하므로 스레드 안전하지 않은 문제가 있다.
+#### inet_ntop()
+```c
+const char* inet_ntop(int af, const void* src, char* dst, socklen_t size);
+```
+- IPv4 or IPv6 이진 주소 → 문자열 변환
+- `inet_pton()`의 반대 함수
+- 매개변수
+    - `af`: `AF_INET` or `AF_INET6`                         
+    - `src`: 이진 주소 (`in_addr*` or `in6_addr*`)               
+    - `dst`: 변환된 문자열이 저장될 버퍼                                 
+    - `size`: 버퍼 크기 (`INET_ADDRSTRLEN` or `INET6_ADDRSTRLEN`) 
+- 반환값
+    - 성공: dst 포인터
+    - 실패: NULL
+
+#### `inet_ntoa()` vs `inet_ntop()`
+| 함수 이름     | 방향              | 지원 IP 버전   | 반환 타입            | 실패 처리 방식                    | 안전성          |
+| ------------- | ----------------- | ----------- | ---------------- | --------------------------- | :------------: |
+| `inet_ntoa()` | in_addr → 문자열 |IPv4 only   | `char*` (static) | `NULL` 반환 가능                | ❌ (스레드 비안전)  |
+| `inet_ntop()` | 이진 주소 → 문자열 |IPv4 & IPv6 | `const char*`    | `NULL` 반환 (오류 시 `errno` 설정) | ✅ (스레드 안전) |
+
+#### VMwere 창 캡쳐하기 
+- Alt + PrtSc : 현재 창만 캡쳐
+- PrtSc : 전체화면 캡쳐
+
+#### nano 단축키
+- Alt + 6 : 복사
+- Ctrl + u : 붙여넣기
+
+### 서버, 클라이언트 소켓 통신 간단 구현
+- [소스코드-서버]()
+- [소스코드-클라이언트]()
+
+#### 서버 동작 함수
+1. socket()
+2. bind()
+3. listen()
+4. accept()
+5. read/write()
+6. close()
+
+#### socket()
+소켓 생성 – 통신에 사용할 소켓(파일 디스크립터) 생성
+```c
+int socket(int domain, int type, int protocol);
+```
+- 매개변수
+    - `domain`: 주소 체계 (AF_INET, AF_INET6, AF_UNIX)
+    - `type`: 통신 방식 (SOCK_STREAM, SOCK_DGRAM)
+    - `protocol`: 보통 0 (자동 선택)
+- 리턴값
+    - 성공: 소켓 파일 디스크립터 (0이상의 정수)
+    - 실패: -1
+
+#### bind()
+소켓에 IP주소 + 포트번호 할당 (주소 바인딩)
+```c
+int bind(int sockfd, const struct sockaddr* addr, socklen_t addrlen);
+```
+- 매개변수
+    - `sockfd`: `socket()`에서 받은 디스크립터
+    - `addr`: `sockaddr_in` 구조체 주소 (AF_INET용)
+    - `addrlen`: 구조체 크기 (`sizeof(struct sockaddr_in)`)
+- 리턴값
+    - 성공: 0
+    - 실패: -1 (포트 중복 사용, 권한 문제(1024 이하 포트))
+
+#### listen()
+연결 요청 대기 상태로 전환
+```c
+int listen(int sockfd, int backlog);
+```
+- 매개변수
+    - `sockfd`: bind()된 소켓 디스크립터
+    - `backlog`: 연결 요청 큐의 최대 길이
+- 리턴값
+    - 성공: 0
+    - 실패: -1
+
+#### accept()
+클라이언트 연결 수락, 새 소켓 반환
+```c
+int accept(int sockfd, struct sockaddr* addr, socklen_t* addrlen);
+```
+- 매개변수
+    - `sockfd`: listen() 상태의 서버 소켓
+    - `addr`: 연결한 클라이언트 주소 정보 저장
+    - `addrlen`: 구조체 크기(입력 + 출력)
+- 리턴값
+    - 성공: 새로운 소켓 디스크립터(클라이언트 전용)
+    - 실패: -1
+
+**🧠📌서버는 이때 만들어진 새로운 스크립트로 `read()/write()` 수행, 원래 `sockfd`는 계속 `accept()`에 사용**
+
+#### read() / write()
+데이터 송수신 (파일/소켓 공통 함수)
+```c
+ssize_t read(int fd, vojid* buf, size_t count);
+ssize_t write(int fd, const void* buf, size_t count);
+```
+- 매개변수
+    - `fd`: accept()에서 받은 소켓 디스크립터
+    - `buf`: 데이터 버퍼
+    - `count`: 읽거나 쓸 최대 바이트 수
+- 리턴값
+    - 성공: 읽거나 쓴 바이트 수
+    - 실패: -1
+    - 0: 상대방이 연결 종료
+
+#### recv() / send()
+`read()` / `write()`와 사용법은 유사하지만,
+**소켓 통신에 특화된 확장 기능을 제공하는 함수**로, POSIX 시스템(리눅스 등)에서 사용
+```c
+ssize_t recv(int sockfd, void *buf, size_t len, int flags);
+ssize_t send(int sockfd, const void *buf, size_t len, int flags);
+```
+- 매개변수 
+    - sockfd: accept() 또는 socket()에서 반환된 소켓 디스크립터.
+    데이터를 송수신할 대상 소켓을 식별하는 데 사용됨.
+    - buf: 
+        - recv()의 경우: 수신한 데이터를 저장할 버퍼
+        - send()의 경우: 전송할 데이터를 담고 있는 버퍼
+    - len: buf의 크기. 최대 송수신 바이트 수를 지정
+    - flags: 송수신 동작을 제어하는 옵션 플래그, 일반적으로 0
+        - 사용 가능한 주요 옵션:
+        - MSG_PEEK: 수신 버퍼를 비우지 않고 들여다보기
+        - MSG_DONTWAIT: 논블로킹 모드로 동작
+        - MSG_WAITALL: 지정한 길이만큼 다 받을 때까지 대기
+- 리턴값 
+    - 성공: 전송된 바이트 수
+    - 실패: -1
+    - recv()가 0 반환 → 상대가 연결 종료
+
+✅ read() / write()보다 소켓 전용 기능이 있어 실무에서는 recv()/send()를 더 자주 사용
+#### close()
+열린 소켓 또는 파일 디스크립터 닫기
+```c
+int close(int fd);
+```
+- 매개변수
+    - fd: socket(), accept() 등으로 생성된 디스크립터
+- 리턴값
+    - 성공: 0
+    - 실패: -1
+
+**🧠📌 `client_fd`, `server_fd` 모두 통신 종료 시 닫아야 리소스 해제**
+
+#### 클라이언트 동작 함수
+1. socket()
+2. connect()
+3. read/write()
+4. close();
