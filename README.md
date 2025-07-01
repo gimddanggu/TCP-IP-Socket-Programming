@@ -141,3 +141,65 @@ C/C++ 에서는 `htons`, `htonl`, `ntohs`, `ntohl` 같은 함수들을 사용해
 | htons()          | host to network short (2바이트) |
 | htonl()          | host to network long (4바이트)  |
 | ntohs(), ntohl() | 네트워크 → 호스트 변환                |
+
+### Ubuntu 공유폴더 설정
+vmware가  shutout 된 상태에서 VM > Settings > Optins > Shared Folders > Always enabled > Add
+
+<img src="./image/sopm0002.png" width="400">
+
+`Browse...` 클릭 후 공유폴더의 경로 설정, 이름 설정
+
+<img src="./image/sopm0003.png" width="400">
+
+- **Enable this share**
+    - 이 공유 폴더를 사용할 것인지 여부
+    - 체크시 VMware 가상 머신에서 해당 폴더를 인식하고 사용 가능해짐
+    - 체크하지 않을 경우 폴더가 공유 목록에는 있지만 사용되지 않음
+- **Read-only**
+    - 읽기 전용으로 공유할지 여부
+        - 체크하면 가상 머신에서는 이 폴더에 대해 **읽기만 가능**, **파일 수정, 삭제 생성 불가**
+        - 체크하지 않으면 **읽기/쓰기 모두 가능**
+
+<img src="./image/sopm0001.png" width="400">
+
+#### VMware Tools 설치 - (`open-vm-tools` 방법)
+```
+sudo apt update
+sudo apt install open-vm-tools open-vm-tools-desktop -y
+sudo reboot
+```
+마운트 안 될 경우 다음 명령어를 실행해 수동 마운트 하기
+```
+sudo vmhgfs-fuse .host:/ /mnt/hgfs -o allow_other
+```
+> 참고) 마운트 명령이 없다고 뜬다면?
+`sudo apt install fuse`
+
+우분투 터미널 접속 후 다음 명령 입력 후 폴더 명이 보이면 성공
+```
+ls /mnt/hgfs
+```
+
+#### 자동 마운트 설정
+```
+sudo mkdir -p /mnt/hgfs
+sudo nano /etc/fstab
+
+다음 줄 추가 
+.host:/    /mnt/hgfs    fuse.vmhgfs-fuse    allow_other    0    0
+```
+
+테스트
+```
+sudo mount -a
+ls /mnt/hgfs
+```
+<img src="./image/sopm0004.png" width="400">
+
+
+#### 바로가기 만들기
+```
+ln -s /mnt/hgfs/{공유폴더명} {~/바탕화면/공유폴더}
+```
+
+
