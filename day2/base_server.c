@@ -4,14 +4,14 @@
 #include <string.h>
 #include <arpa/inet.h>
 
-int main() 
+int main(int argc, char** argv) 
 {
 	int server_fd, client_fd;
 	struct sockaddr_in server_addr, client_addr;
 	socklen_t client_addr_len;
 	const char* message = "Hello world!!\n";
 
-	if (server_fd = socket(PF_INET, SOCK_STREAM, 0) == -1) {
+	if ((server_fd = socket(PF_INET, SOCK_STREAM, 0)) == -1) {
 		perror("socket failed");
 		exit(1);
 	}
@@ -20,6 +20,10 @@ int main()
 	server_addr.sin_family = AF_INET;
 	server_addr.sin_addr.s_addr = INADDR_ANY;
 	server_addr.sin_port = htons(atoi(argv[1]));
+
+	// 소켓 옵션 추가
+	int enable = 1;
+	setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
 
 	if(bind(server_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) == -1) {
 		perror("bind failed");
@@ -35,7 +39,7 @@ int main()
 	}
 
 	client_addr_len = sizeof(client_addr);
-	if (client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_addr_len) == -1) {
+	if ((client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_addr_len)) == -1) {
 		perror("accept failed");
 		close(server_fd);
 		exit(1);
