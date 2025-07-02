@@ -361,8 +361,8 @@ const char* inet_ntop(int af, const void* src, char* dst, socklen_t size);
 ### 서버 동작 함수
 1. socket()
 2. bind()
-3. listen()
-4. accept()
+3. listen() - TCP
+4. accept() - TCP
 5. read/write()
 6. close()
 
@@ -422,7 +422,7 @@ int accept(int sockfd, struct sockaddr* addr, socklen_t* addrlen);
 #### 5. read() / write()
 데이터 송수신 (파일/소켓 공통 함수)
 ```c
-ssize_t read(int fd, vojid* buf, size_t count);
+ssize_t read(int fd, void* buf, size_t count);
 ssize_t write(int fd, const void* buf, size_t count);
 ```
 - 매개변수
@@ -489,7 +489,7 @@ socket()  →  bind()  →  listen()  →  accept()  →  read()/write()  →  c
 
 socket(), read/write(), close()는 함수가 같으므로 [서버 동작 함수](#서버-동작-함수) 참고
 
-### 2.connect()
+#### 2.connect()
 서버에 연결 시도
 ```c
 int connect(int sockfd, const struct sockaddr* addr, socklen_t addrlen);
@@ -523,8 +523,178 @@ socket()  →  connect()  →  read()/write()  →  close()
 | 0  | `stdin`  | 표준 입력    |
 | 1  | `stdout` | 표준 출력    |
 | 2  | `stderr` | 표준 에러 출력 |
+
 → **모든 프로세스는 최소 0~2번까지 파일 디스크립터를 이미 열고 시작**
 
 **🔸사용 이유**
 - **모든 I/O를 추상화**해서 동일한 방식(`read()`, `write()`, `close()`)으로 다룰 수 있음
 - 커널이 리소스를 효율적으로 관리할 수 있게 함
+
+#### listen()에서 `backlog`의 의미는?
+`listen(fd, backlog)`에서 backlog는 동시 접속 요청을 처리하는 개수❌,
+**아직 accept()로 처리되지 않은 연결 요청을 몇 개까지 대기시킬 수 있는가⭕** 를 의미한다.
+예시: `backlog = 5` 일 때
+- A ~ F 가 동시에 접속 요청을 보냈을 경우
+    - A ~ E는 대기 큐에 들어감
+    - F는 연결실패
+
+#### 클라이언트가 대기 큐에 못 들어갔을 때 발생하는 일
+TCP 통신은 **3-way handshake** 과정을 거친다:
+- 클라이언트 connect() 호출 (`SYN` 패킷 보냄)
+- 서버가 받아서 `SYN-ACK`를 보냄
+- 클라이언트가 다시 `ACK`를 보냄
+- 서버와 클라이언트 연결 완료
+
+backlog가 가득 찼다면, 서버는 다음 중 하나를 수행한다:
+- `SYN-ACK`을 보내지 않음 (즉시 무시)
+- `SYN-ACK`을 보냈더라도 이후 연결을 끊음 (RST)
+
+
+클라이언트에서는
+- `connect()` 지연: TCP는 재전송 시도
+- `connect()` 실패: 최종적으로 응답이 없으면 `ECONNREFUSED` 또는 `ETIMEDOUT` 오류 발생
+- 일시적 성공 후 끊김: handshake는 성공했지만 `accept()`되지 않아 바로 `RST` 로 인해 연결 종료
+
+이러한 경우 
+- 클라이언트가 잠깐 멈췄다가 재시도 
+- 로드밸런서나 큐 시스템 사용
+- 서버 측에서 `accept()`를 빨리 처리하거나, backlog 값을 늘려서 대응할 수 있다.
+
+#### 개발자가 대응할 수 있는 방법
+대기 큐가 가득 찬 이후의 동작은 운영체제가 정한다 → **개발자가 직접 제어는 불가**
+개발자가 할 수 있는 것은 큐가 가득 차기 전에 **대응**하는 것!
+- backlog 값 늘리기: `listen(fd, SOMAXCONN)` + 커널 제한 확인 `(/proc/sys/net/core/somaxconn)`
+- accept 최적화: 블로킹 처리 개선, 멀티스레딩, 논블로킹 IO 사용
+- epoll, select 활용: 효율적인 다중 클라이언트 처리
+- 리버스 프록시 도입: Nginx, HAProxy 등으로 요청 분산
+- 클라이언트 재시도 로직 구현: 실패 시 exponential backoff 방식 재시도 등
+
+각 방식에 대해서는 추후에 공부 후 추가
+
+## 3일차
+### UDP 소켓 전용 입출력 함수
+UDP는 연결less 방식이며, 신뢰성 없는 비연결형 전송을 제공된다. 일대일의 연결관계가 아니기 때문에 listen()과 accept()가 필요 없다. 
+클라이언트의 주소 할당은 sendto 함수 호출 시 자동으로 할당된다.
+단, 일대일 연결이 지속될 경우는 connect 함수를 사용하여 주소 정보를 저장시키고 sendto, recvfrom 함수 대신 write, read 함수로 데이터를 주고 받으면 된다. 
+
+#### sendto()
+`send()`와 달리 보낼 주소 정보를 명시해야 함
+```c
+sendto(sockfd, buffer, strlen(buffer), 0,
+       (struct sockaddr*)&client_addr, sizeof(client_addr));
+```
+- 매개변수
+    - `sockfd`: 전송할 소켓의 파일 디스크립터                                  
+    - `buf`:  보낼 데이터가 담긴 버퍼의 포인터                               
+    - `len`: 보낼 데이터의 바이트 수                                     
+    - `flags`: 일반적으로 0 사용. (비트 플래그)                              
+    - `dest_addr`:  데이터를 보낼 대상의 주소 (IP + 포트)                          
+    - `addrlen`:  `dest_addr` 구조체 크기 (`sizeof(struct sockaddr_in)`) 
+- 리턴값
+    - 성공: 전송한 바이트 수
+    - 실패: -1 반환
+### recvfrom()
+데이터를 수신하고 보낸 사람 주소 정보도 받음
+```c
+socklen_t addrlen = sizeof(client_addr);
+recvfrom(sockfd, buffer, sizeof(buffer), 0,
+         (struct sockaddr*)&client_addr, &addrlen);
+```
+- 매개변수
+    - `sockfd`: 수신할 소켓의 파일 디스크립터                                  
+    - `buf`:  수신된 데이터가 담긴 버퍼의 포인터                               
+    - `len`: 최대 수신 바이트 수 (버퍼크기)                                     
+    - `flags`: 일반적으로 0 사용.                              
+    - `dest_addr`:  보낸 쪽 주소가 저장될 구조체 포인터                         
+    - `addrlen`:  `src_addr`의 크기를 담은 변수의 주소 (입출력용)
+- 리턴값
+    - 성공: 수신한 바이트 수
+    - 실패: -1 반환
+### TCP 소켓 연결 제어 함수 - `shutdown()`
+#### shutdown()
+양방향 TCP 연결 중 한 방향(송신 또는 수신)만 선택적으로 끊고 싶을 때 사용하는 함수. (양방향 끊기도 가능함)
+```C
+int shutdown(int sockfd, int how);
+```
+- 매개변수
+    - sockfd: 종료할 소켓의 파일 디스크립터
+    - how: 종료 방식 선택(`SHUT_RD`, `SHUT_WR`, `SHUT_RDWR`)
+        - `SHUT_RD`: 수신 종료
+        - `SHUT_WR`: 송신 종료
+        - `SHUT_RDWR`: 송수신 모두 종료
+- 반환값
+    - 성공: 0
+    - 실패: -1
+
+**사용 예시**
+- HTTP/1.0 통신 (클라이언트 입장)
+    - 서버가 `read()`로 요청을 읽을 때, 클라이언트가 `shutdown(SHUT_WR)`을 안 하면 계속 기다림
+    - `shutdown()`으로 송신 종료를 명시함으로써 서버가 정상적으로 요청을 처리하게 유도함
+- 파일 전송 후 결과 기다리는 클라이언트
+    - 파일을 전송한 후 서버가 "성공" 메시지를 보내줄 때까지 기다림
+- SMTP (메일 프로토콜) 클라이언트
+    - 메일 데이터를 다 보낸 후 DATA 명령 종료를 알리기 위해 `.`전송 + 송신 종료
+
+**🧠📌 `shutdown()`은 소켓의 송/수신 기능만 비활성화 할 뿐, 소켓 리소스 자체를 해제하거나 커널에서 FD를 반납하지 않기 때문에 colse()를 사용해 리소스를 해제해주어야 한다.**
+
+**❓shutdown(SHUT_WR) 이후에 다시 송신가능?**
+>-> shutdown()을 한 후 기존 소켓으로 송/수신을 다시 할 수 없다. 
+- 이유:
+    - TCP는 연결지향 프로토콜
+    - shutdown(SHUT_WR)은 TCP 레벨에서 `FIN` 패킷을 전송하는 동작
+    - FIN은 "내 쪽 송/수신 스트림은 이제 끝났어"라는 약속이므로, 이 후에는 `send()` 불가능
+    - 이는 **TCP 프로토콜 표준에 따른 동작**이며, 시스템이 강제로 막음
+- 만약 `SHUT_WR` 후 `send()`를 호출하면?
+    - send()가 실패하고 -1 반환
+    - errno == `EPIPE` (Broken pipe)
+    - 리눅스에서는 `SIGPIPE` 시그널로 프로세스가 종료될 수도 있음
+        - 방지하려면: `signal(SIGPIPE, SIG_IGN);` 또는 `MSG_NOSIGNAL` 플래그 사용 (send())
+- 다시 송/수신 하고 싶은 경우 
+    - 기존소켓 close()
+    - `socket()` → `connect()` 또는 `accept()`로 **새 소켓**을 생성해야 한다. 
+
+
+#### gethostbyname()
+도메인 이름 → IP 주소 변환 함수:
+```c
+struct hostent *gethostbyname(const char *name);
+```
+#### gethostbyaddr()
+IP 주소 → 도메인 이름 변환 함수
+```c
+struct hostent *gethostbyaddr(const void *addr, socklen_t len, int type);
+```
+### struct hostent 구조체
+```c
+struct hostent {
+    char  *h_name;       // 공식 호스트 이름
+    char **h_aliases;    // 별칭 목록 (NULL로 끝남)
+    int    h_addrtype;   // 주소 체계 (보통 AF_INET)
+    int    h_length;     // 주소 길이 (IPv4는 4)
+    char **h_addr_list;  // IP 주소 목록 (char*의 배열)
+};
+```
+---
+저녁에 추가로 정리
+### 멀티프로세서
+#### 프로세스
+실행중인 프로그램을 의미한다..
+프로세스를 생성하기 위해서 부모 프로세스는 fork() 함수를 호출하여 자식 프로세스를 생성한다.
+부모 프로세스: Fork함수의 반환 값을 가지는 프로세서
+자식 프로세서: Fork 함수의 반환 값으로 0을 가지는 프로세서
+#### 프로세스와 프로세서의 차이
+프로세서(Processor)
+- 컴퓨터의 중앙 처리 장치(CPU)
+- 모든 연산과 제어의 중심 역할을 함
+- 생성된 여러 프로세스를 번갈아 실행시키는 역할을 함(스케줄링)
+프로세스(Process)
+- 실행중인 프로그램을 의미
+- 운영체제(OS)가 관리 
+#### fork()
+
+#### 좀비 프로세스
+<!-- 실행이 완료되었지만 소멸되지 않고 리소스를 차지하는 프로세스
+프로세스는 main함수가 반환되면 소멸되어야 한다 
+생성원인
+- 자식 프로세스가 종료되면서 반환하는 상태 값이 부모 프로세스에게 전달되지 않아 올바르게 종료 안됨 -->
+#### waitid()
