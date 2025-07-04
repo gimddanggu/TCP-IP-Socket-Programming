@@ -216,6 +216,7 @@ ln -s /mnt/hgfs/{공유폴더명} {~/바탕화면/공유폴더}
 #### nano 단축키
 - Alt + 6 : 복사
 - Ctrl + u : 붙여넣기
+- Ctrl + _(언더바) : 줄 번호 이동
 
 ### sockaddr_in 구조체 정의 (IPv4 전용)
 ```c
@@ -780,12 +781,67 @@ struct hostent {
     - 부모 이미 죽었을 경우 -> os가 자동으로 정리(init 프로세스가 수거)
     - 부모가 고의로 방치 -> `SIGCHLD` 시그널 핸들링 추가 
 
+#### wait()
+부모 프로세스가 자식 프로세스가 종료될 때까지 기다리게 하는 함수
+자식 프로세스가 종료되면 종료상태를 부모가 받아 운영체제가 정상적으로 처리할  수 있게 도와준다(좀비 프로세스 방지)
+```c
+#include <sys/types.h>
+#include <sys/wait.h>
+
+pid_t wait(int *status);
+```
+리턴 값
+- 자식이 정상 됐을 경우: 자식의 PID
+- 자식 없음 OR 이미 처리: -1(실패)
+- 오류 발생: -1
+#### waitpid()
+특정 자식만 기다리거나 비동기 처리가 필요할 경우 사용
+options를 통해 **논블로킹**도 가능
+```C
+#include <sys/types.h>
+#include <sys/wait.h>
+
+pid_t waitpid(pid_t pid, int *status, int options);
+```
+- 매개변수 
+    - pid: 어떤 자식을 기다릴지 지정
+        - `> 0`: 특정 자식 PID
+        - `= 0`: 같은 그룹의 자식 중 하나
+        - `= -1`: 모든 자식 (기본값, wait()과 동일)
+        - `< -1`: 특정 프로세스 그룹의 자식
+    - status: 자식 종료 상태를 저장할 변수의 포인터
+    - options: 대기 방식 지정. 보통 `0`, `WNOHANG`, `WUNTRACED` 를 사용 
+- 리턴 값
+    - 자식 PID: 정상 종료
+    - `0`: WNOHANG 옵션 사용 시, 아직 종료되지 않음
+    - `-1`: 에러 발생
 #### waitid()
+wait 보다 자세한 정보가 필요하거나 POSIX 호환이 필요한 경우
+siginfo_t 구조체를 통해 보다 풍부한 정보를 얻을 수 있음
+```C
+#include <sys/types.h>
+#include <sys/wait.h>
+
+int waitid(idtype_t idtype, id_t id, siginfo_t *infop, int options);
+```
+- 매개변수
+    - idtype: 	어떤 종류의 ID를 기다릴지 (P_PID, P_PGID, P_ALL)
+    - id: 실제 PID 또는 PGID 또는 0
+    - infop: 자식의 종료 정보를 담을 siginfo_t*
+    - options: `WEXITED`, `WNOHANG`, `WSTOPPED`, `WNOWAIT` 등
+- 리턴 값
+    - 성공: 0
+    - 실패: -1
+#### status 값 확인 방법
+- WIFEXITED(status) - 정상 종료 여부
+- WEXITSTATUS() - exit()에서 반환한 종료 코드 
+- WIFSIGNALED(status) - 시그널로 종료되었는지 여부
+- WTERMSIG() - 종료시 사용된 시그널 번호
 #### 종료함수
 ```c
 void _exit(int status);
 void exit(int status);
-int atexit(void (*function)(void));
+int atexit(void (*function)(void)); // 나중에 추가 할 것
 ```
 - `_exit()`
   - 호출 프로세스 **즉시** 종료
@@ -800,3 +856,56 @@ int atexit(void (*function)(void));
   - 참고) `main()` 함수안에서 `return()`은 `exit()`와 동일
 
 <img src="./image/sopm0005.png" width="400">
+
+## 4일차
+### 시그널 함수
+- `#include <signal.h>` 헤더파일 필요
+- 특정 시그널이 발생했을 때 어떤 동작을 할지 설정하는 함수
+#### signal()
+```c
+#include <signal.h>
+
+void (*signal(int signum, void (*handler)(int)))(int);
+```
+- 매개변수
+    - `signum`: 설정할 시그널 번호
+    - `handler`: 해당 시그널이 발생했을 때 실행할 함수(핸들러)
+        - 함수포인터: 사용자 지정 함수
+        - `SIG_DFL`: Default 동작 수행
+        - `SIG_IGN`: 시그널 무시
+
+#### sigaction()
+`signal()` 함수보다 더 정교하고 안전하게 시그널을 다룰 수 있어서 시그널 처리의 표준 함수로 권장되는 함수
+```c
+int sigaction(int signum, const struct sigaction *act, struct sigaction *oldact);
+```
+- 매개변수
+    - `signum`: 처리할 시그널 번호
+    - `act`: 새로 설정할 시그널 처리 동작에 대한 정보 (`struct sigaction*`)
+    - `oldact`: 이전 시그널 처리기를 저장할 곳 (`NULL`이면 무시)
+- 반환값
+    - 성공: 0
+    - 실패: -1
+```c
+struct sigaction {
+    void (*sa_handler)(int);   // 시그널 핸들러 함수 포인터
+    sigset_t sa_mask;          // 시그널 핸들러 실행 중 블록할 시그널 집합
+    int sa_flags;              // 동작 제어 플래그 (예: SA_RESTART, SA_SIGINFO)
+};
+```
+
+#### 자주 사용되는 시그널 정리 
+
+| 시그널 이름    | 번호 | 의미                    |
+| --------- | -- | --------------------- |
+| `SIGINT`  | 2  | 인터럽트 신호 (Ctrl + C)    |
+| `SIGTERM` | 15 | 종료 요청 (일반적인 종료 요청)    |
+| `SIGKILL` | 9  | 강제 종료 (무조건 종료, 무시 불가) |
+| `SIGSTOP` | 19 | 일시 정지 (무시 불가)         |
+| `SIGCONT` | 18 | 정지 → 재개               |
+| `SIGCHLD` | 17 | 자식 종료 알림              |
+| `SIGALRM` | 14 | 알람 시그널 (시간 초과)        |
+
+// 엣지 트리거 // 레벨트리거 방식
+
+### 프로세스간 통신
